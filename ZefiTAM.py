@@ -7,7 +7,7 @@ import requests
 # PAGE CONFIGURATION
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Multi-State Oil & Gas Aggregator",
+    page_title="Appalachian Basin Oil & Gas Aggregator",
     page_icon="🛢️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -34,23 +34,30 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Common headers to prevent state servers from blocking Python requests
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
+
+TARGET_COLS = ['State', 'Permit_ID', 'Well_Number', 'Operator', 'County', 'Type', 'Status']
+
 # ---------------------------------------------------------
-# STATE DATA FETCHERS (Standardized Schema Output)
-# Schema: State | Permit_ID | Well_Number | Operator | County | Type | Status
+# STATE DATA FETCHERS
 # ---------------------------------------------------------
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800)
 def fetch_ohio_data():
     """Ohio ODNR Open GIS API"""
     url = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/Oil_and_Gas_Wells_Locations_of_Ohio/FeatureServer/0/query"
     params = {
         'where': '1=1',
-        'outFields': 'PERMIT_NBR,WELL_NUMBER,OWNER_NAME,COUNTY,WELL_TYPE,WELL_STATUS',
-        'resultRecordCount': 2000,
+        'outFields': '*',
+        'resultRecordCount': 1000,
         'f': 'json'
     }
     try:
-        data = requests.get(url, params=params, timeout=10).json()
+        response = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        data = response.json()
         records = [f['attributes'] for f in data.get('features', [])]
         df = pd.DataFrame(records)
         if not df.empty:
@@ -63,22 +70,24 @@ def fetch_ohio_data():
                 'WELL_TYPE': 'Type',
                 'WELL_STATUS': 'Status'
             })
-        return df
-    except Exception:
-        return pd.DataFrame()
+            return df
+    except Exception as e:
+        st.warning(f"Ohio Fetch Error: {e}")
+    return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800)
 def fetch_pa_data():
     """Pennsylvania DEP GIS API"""
     url = "https://gis.dep.pa.gov/depgisprd/rest/services/OilGas/OilGasAllStrayGas/MapServer/3/query"
     params = {
         'where': '1=1',
-        'outFields': 'PERMIT_NUMBER,WELL_NUMBER,OPERATOR_NAME,COUNTY,WELL_TYPE,WELL_STATUS',
-        'resultRecordCount': 2000,
+        'outFields': '*',
+        'resultRecordCount': 1000,
         'f': 'json'
     }
     try:
-        data = requests.get(url, params=params, timeout=10).json()
+        response = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        data = response.json()
         records = [f['attributes'] for f in data.get('features', [])]
         df = pd.DataFrame(records)
         if not df.empty:
@@ -91,17 +100,18 @@ def fetch_pa_data():
                 'WELL_TYPE': 'Type',
                 'WELL_STATUS': 'Status'
             })
-        return df
-    except Exception:
-        return pd.DataFrame()
+            return df
+    except Exception as e:
+        st.warning(f"PA Fetch Error: {e}")
+    return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800)
 def fetch_ny_data():
     """New York Open Data Socrata API"""
-    url = "https://data.ny.gov/resource/3ub5-233v.json?$limit=2000"
+    url = "https://data.ny.gov/resource/3ub5-233v.json?$limit=1000"
     try:
-        res = requests.get(url, timeout=10).json()
-        df = pd.DataFrame(res)
+        response = requests.get(url, headers=HEADERS, timeout=15)
+        df = pd.DataFrame(response.json())
         if not df.empty:
             df['State'] = 'NY'
             df['Well_Number'] = df.get('well_name', df.get('api_well_number', 'N/A'))
@@ -112,22 +122,24 @@ def fetch_ny_data():
                 'well_type': 'Type',
                 'well_status': 'Status'
             })
-        return df
-    except Exception:
-        return pd.DataFrame()
+            return df
+    except Exception as e:
+        st.warning(f"NY Fetch Error: {e}")
+    return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800)
 def fetch_wv_data():
     """West Virginia DEP GIS API"""
     url = "https://services.arcgis.com/jDGuO8tYggdCCnUJ/arcgis/rest/services/W_Virginia_1112018/FeatureServer/1/query"
     params = {
         'where': '1=1',
-        'outFields': 'API,WELL_NO,OPERATOR,COUNTY,STATUS',
-        'resultRecordCount': 2000,
+        'outFields': '*',
+        'resultRecordCount': 1000,
         'f': 'json'
     }
     try:
-        data = requests.get(url, params=params, timeout=10).json()
+        response = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        data = response.json()
         records = [f['attributes'] for f in data.get('features', [])]
         df = pd.DataFrame(records)
         if not df.empty:
@@ -140,22 +152,24 @@ def fetch_wv_data():
                 'COUNTY': 'County',
                 'STATUS': 'Status'
             })
-        return df
-    except Exception:
-        return pd.DataFrame()
+            return df
+    except Exception as e:
+        st.warning(f"WV Fetch Error: {e}")
+    return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=1800)
 def fetch_ky_data():
     """Kentucky Geological Survey API"""
     url = "https://kgs.uky.edu/arcgis/rest/services/OilGas/KY_OilGas_Wells/MapServer/0/query"
     params = {
         'where': '1=1',
-        'outFields': 'PERMIT_NO,WELL_NO,OPERATOR_NAME,COUNTY,WELL_TYPE,STATUS',
-        'resultRecordCount': 2000,
+        'outFields': '*',
+        'resultRecordCount': 1000,
         'f': 'json'
     }
     try:
-        data = requests.get(url, params=params, timeout=10).json()
+        response = requests.get(url, params=params, headers=HEADERS, timeout=15)
+        data = response.json()
         records = [f['attributes'] for f in data.get('features', [])]
         df = pd.DataFrame(records)
         if not df.empty:
@@ -168,12 +182,10 @@ def fetch_ky_data():
                 'WELL_TYPE': 'Type',
                 'STATUS': 'Status'
             })
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-# Standard fields requirement
-TARGET_COLS = ['State', 'Permit_ID', 'Well_Number', 'Operator', 'County', 'Type', 'Status']
+            return df
+    except Exception as e:
+        st.warning(f"KY Fetch Error: {e}")
+    return pd.DataFrame()
 
 def get_aggregated_data(selected_states):
     dfs = []
@@ -189,7 +201,6 @@ def get_aggregated_data(selected_states):
         if state in state_map:
             df_state = state_map[state]()
             if not df_state.empty:
-                # Ensure all schema columns exist before concatenating
                 for col in TARGET_COLS:
                     if col not in df_state.columns:
                         df_state[col] = "N/A"
@@ -200,7 +211,7 @@ def get_aggregated_data(selected_states):
     return pd.DataFrame(columns=TARGET_COLS)
 
 # ---------------------------------------------------------
-# SIDEBAR FILTERS
+# INTERFACE & CONTROLS
 # ---------------------------------------------------------
 st.sidebar.title("🛢️ Screener Controls")
 
@@ -210,22 +221,17 @@ selected_states = st.sidebar.multiselect(
     default=["OH", "PA", "NY", "WV", "KY"]
 )
 
-# Fetch consolidated data
 raw_df = get_aggregated_data(selected_states)
 
 if not raw_df.empty:
-    # Fill NA values for consistent filtering
     raw_df = raw_df.fillna("Unknown")
     
-    # Operators Filter
-    operators = ["All"] + sorted(list(raw_df['Operator'].unique()))
+    operators = ["All"] + sorted([str(op) for op in raw_df['Operator'].unique() if op])
     selected_operator = st.sidebar.selectbox("Operator / Owner", operators)
     
-    # County Filter
-    counties = ["All"] + sorted(list(raw_df['County'].unique()))
+    counties = ["All"] + sorted([str(c) for c in raw_df['County'].unique() if c])
     selected_county = st.sidebar.selectbox("County", counties)
     
-    # Filtering logic
     filtered_df = raw_df.copy()
     if selected_operator != "All":
         filtered_df = filtered_df[filtered_df['Operator'] == selected_operator]
@@ -234,13 +240,10 @@ if not raw_df.empty:
 else:
     filtered_df = pd.DataFrame(columns=TARGET_COLS)
 
-# ---------------------------------------------------------
-# DASHBOARD INTERFACE
-# ---------------------------------------------------------
-st.title("Appalachian Basin Well Aggregator")
-st.caption("Live running aggregate across OH, PA, NY, WV, and KY state registers")
+# Header & Metrics
+st.title("Appalachian Basin Oil & Gas Aggregator")
+st.caption("Live aggregate data pulling directly from OH, PA, NY, WV, and KY state geological databases")
 
-# Metric Summary Row
 c1, c2, c3, c4 = st.columns(4)
 
 total_count = len(filtered_df)
@@ -255,52 +258,36 @@ with c2:
 with c3:
     st.markdown(f'<div class="metric-card"><div class="metric-label">States Represented</div><div class="metric-value">{active_states}</div></div>', unsafe_allow_html=True)
 with c4:
-    st.markdown(f'<div class="metric-card"><div class="metric-label">Top Basin Operator</div><div class="metric-value">{top_operator[:15]}...</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="metric-card"><div class="metric-label">Top Basin Operator</div><div class="metric-value">{str(top_operator)[:15]}...</div></div>', unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# Tally Tabs
 if not filtered_df.empty:
     tab1, tab2 = st.tabs(["📊 Basin Running Tally", "📋 Combined Permit Table"])
     
     with tab1:
-        row1_col1, row1_col2 = st.columns(2)
-        
-        with row1_col1:
-            st.subheader("Wells Running Tally by State")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Running Well Tally by State")
             state_tally = filtered_df['State'].value_counts().reset_index()
             state_tally.columns = ['State', 'Well Count']
             fig_state = px.bar(
-                state_tally,
-                x='State',
-                y='Well Count',
-                color='State',
-                template="plotly_dark",
-                color_discrete_sequence=px.colors.qualitative.Set2
+                state_tally, x='State', y='Well Count', color='State', template="plotly_dark"
             )
             st.plotly_chart(fig_state, use_container_width=True)
             
-        with row1_col2:
-            st.subheader("Top 10 Operators Across Basin")
+        with col2:
+            st.subheader("Top 10 Operators")
             op_tally = filtered_df['Operator'].value_counts().head(10).reset_index()
             op_tally.columns = ['Operator', 'Well Count']
             fig_op = px.bar(
-                op_tally,
-                x='Well Count',
-                y='Operator',
-                orientation='h',
-                template="plotly_dark",
-                color_discrete_sequence=["#2563EB"]
+                op_tally, x='Well Count', y='Operator', orientation='h', template="plotly_dark"
             )
             fig_op.update_layout(yaxis={'categoryorder': 'total ascending'})
             st.plotly_chart(fig_op, use_container_width=True)
             
     with tab2:
         st.subheader("Aggregated Well Permit Registry")
-        st.dataframe(
-            filtered_df,
-            use_container_width=True,
-            hide_index=True
-        )
+        st.dataframe(filtered_df, use_container_width=True, hide_index=True)
 else:
-    st.info("No records loaded. Select states in the sidebar to fetch well registers.")
+    st.info("Fetching data from state servers... If data does not appear, ensure you have active internet connectivity and at least one state selected.")
