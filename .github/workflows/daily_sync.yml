@@ -15,7 +15,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref }}
+          fetch-depth: 0  # Downloads full branch history to avoid detached HEAD errors
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -33,5 +33,6 @@ jobs:
       - name: Commit and Push Updated Parquet Data
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
+          branch: main
           commit_message: "auto: daily well data update [skip ci]"
           file_pattern: "wells_data.parquet"
