@@ -1,9 +1,11 @@
-import concurrent.futures
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import requests
 
+# ---------------------------------------------------------
+# PAGE CONFIGURATION & STYLING
+# ---------------------------------------------------------
 st.set_page_config(
     page_title="Appalachian Basin Oil & Gas Aggregator",
     page_icon="🛢️",
@@ -44,34 +46,42 @@ def get_first_valid_col(df, possible_names, default="Unknown"):
             return df[col].astype(str)
     return pd.Series([default] * len(df))
 
+# ---------------------------------------------------------
+# STATE DATA FETCHERS WITH DIAGNOSTICS
+# ---------------------------------------------------------
 def fetch_single_state_data(state_code):
     """Fetches records for a single state with detailed error reporting."""
+    
     if state_code == "NY":
-        # New York Open Data Socrata Endpoint
-        url = "https://data.ny.gov/resource/3ub5-233v.json?$limit=5000"
+        # NYS DEC Direct Bulk CSV Feed (Bypasses API 404s)
+        url = "https://data.ny.gov/api/views/3ub5-233v/rows.csv?accessType=DOWNLOAD"
         try:
-            res = requests.get(url, headers=HEADERS, timeout=12)
-            if res.status_code == 200:
-                data = res.json()
-                if isinstance(data, list) and len(data) > 0:
-                    df = pd.DataFrame(data)
-                    clean_df = pd.DataFrame()
-                    clean_df['State'] = ['NY'] * len(df)
-                    clean_df['Permit_ID'] = get_first_valid_col(df, ['api_well_number'])
-                    clean_df['Well_Number'] = get_first_valid_col(df, ['well_name'])
-                    clean_df['Operator'] = get_first_valid_col(df, ['operator_name'])
-                    clean_df['County'] = get_first_valid_col(df, ['county'])
-                    clean_df['Type'] = get_first_valid_col(df, ['well_type'])
-                    clean_df['Status'] = get_first_valid_col(df, ['well_status'])
-                    return clean_df, f"Success ({len(clean_df):,} records)"
-                return pd.DataFrame(), "API returned 0 records"
-            return pd.DataFrame(), f"HTTP Error {res.status_code}"
+            df = pd.read_csv(url, nrows=5000)
+            if not df.empty:
+                df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+                clean_df = pd.DataFrame()
+                clean_df['State'] = ['NY'] * len(df)
+                clean_df['Permit_ID'] = get_first_valid_col(df, ['api_well_number', 'api'])
+                clean_df['Well_Number'] = get_first_valid_col(df, ['well_name', 'well_number'])
+                clean_df['Operator'] = get_first_valid_col(df, ['operator_name', 'operator'])
+                clean_df['County'] = get_first_valid_col(df, ['county'])
+                clean_df['Type'] = get_first_valid_col(df, ['well_type'])
+                clean_df['Status'] = get_first_valid_col(df, ['well_status'])
+                return clean_df, f"Success ({len(clean_df):,} records)"
+            return pd.DataFrame(), "CSV loaded but empty"
         except Exception as e:
-            return pd.DataFrame(), f"Connection Error: {str(e)[:50]}"
+            return pd.DataFrame(), f"NY CSV Error: {str(e)[:40]}"
 
     elif state_code == "OH":
+        # Ohio ODNR Layer 0 with explicit outFields & geometry flag
         url = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/Oil_and_Gas_Wells_Locations_of_Ohio/FeatureServer/0/query"
-        params = {'where': '1=1', 'outFields': '*', 'resultRecordCount': 2000, 'f': 'json'}
+        params = {
+            'where': '1=1',
+            'outFields': 'PERMIT_NBR,WELL_NUMBER,OWNER_NAME,COUNTY,WELL_TYPE,WELL_STATUS',
+            'returnGeometry': 'false',
+            'resultRecordCount': 2000,
+            'f': 'json'
+        }
         try:
             res = requests.get(url, params=params, headers=HEADERS, timeout=12)
             if res.status_code == 200:
@@ -81,9 +91,9 @@ def fetch_single_state_data(state_code):
                     df = pd.DataFrame([f['attributes'] for f in features])
                     clean_df = pd.DataFrame()
                     clean_df['State'] = ['OH'] * len(df)
-                    clean_df['Permit_ID'] = get_first_valid_col(df, ['PERMIT_NBR', 'API_NUMBER', 'PERMIT'])
-                    clean_df['Well_Number'] = get_first_valid_col(df, ['WELL_NUMBER', 'WELL_NUM'])
-                    clean_df['Operator'] = get_first_valid_col(df, ['OWNER_NAME', 'OPERATOR'])
+                    clean_df['Permit_ID'] = get_first_valid_col(df, ['PERMIT_NBR', 'API_NUMBER'])
+                    clean_df['Well_Number'] = get_first_valid_col(df, ['WELL_NUMBER'])
+                    clean_df['Operator'] = get_first_valid_col(df, ['OWNER_NAME'])
                     clean_df['County'] = get_first_valid_col(df, ['COUNTY'])
                     clean_df['Type'] = get_first_valid_col(df, ['WELL_TYPE'])
                     clean_df['Status'] = get_first_valid_col(df, ['WELL_STATUS'])
@@ -91,16 +101,16 @@ def fetch_single_state_data(state_code):
                 return pd.DataFrame(), "No features returned"
             return pd.DataFrame(), f"HTTP Error {res.status_code}"
         except Exception as e:
-            return pd.DataFrame(), f"Connection Error: {str(e)[:50]}"
+            return pd.DataFrame(), f"Connection Error: {str(e)[:40]}"
 
     elif state_code == "PA":
+        # Pennsylvania DEP GIS MapServer
         url = "https://gis.dep.pa.gov/depgisprd/rest/services/OilGas/OilGasAllStrayGas/MapServer/3/query"
         params = {'where': '1=1', 'outFields': '*', 'resultRecordCount': 2000, 'f': 'json'}
         try:
             res = requests.get(url, params=params, headers=HEADERS, timeout=12)
             if res.status_code == 200:
-                data = res.json()
-                features = data.get('features', [])
+                features = res.json().get('features', [])
                 if features:
                     df = pd.DataFrame([f['attributes'] for f in features])
                     clean_df = pd.DataFrame()
@@ -112,19 +122,18 @@ def fetch_single_state_data(state_code):
                     clean_df['Type'] = get_first_valid_col(df, ['WELL_TYPE'])
                     clean_df['Status'] = get_first_valid_col(df, ['WELL_STATUS'])
                     return clean_df, f"Success ({len(clean_df):,} records)"
-                return pd.DataFrame(), "No features returned"
             return pd.DataFrame(), f"HTTP Error {res.status_code}"
         except Exception as e:
-            return pd.DataFrame(), f"Connection Error: {str(e)[:50]}"
+            return pd.DataFrame(), f"Connection Error: {str(e)[:40]}"
 
     elif state_code == "WV":
+        # West Virginia DEP FeatureServer
         url = "https://services.arcgis.com/jDGuO8tYggdCCnUJ/arcgis/rest/services/W_Virginia_1112018/FeatureServer/1/query"
         params = {'where': '1=1', 'outFields': '*', 'resultRecordCount': 2000, 'f': 'json'}
         try:
             res = requests.get(url, params=params, headers=HEADERS, timeout=12)
             if res.status_code == 200:
-                data = res.json()
-                features = data.get('features', [])
+                features = res.json().get('features', [])
                 if features:
                     df = pd.DataFrame([f['attributes'] for f in features])
                     clean_df = pd.DataFrame()
@@ -136,14 +145,12 @@ def fetch_single_state_data(state_code):
                     clean_df['Type'] = pd.Series(['Oil/Gas'] * len(df))
                     clean_df['Status'] = get_first_valid_col(df, ['STATUS'])
                     return clean_df, f"Success ({len(clean_df):,} records)"
-                return pd.DataFrame(), "No features returned"
             return pd.DataFrame(), f"HTTP Error {res.status_code}"
         except Exception as e:
-            return pd.DataFrame(), f"Connection Error: {str(e)[:50]}"
+            return pd.DataFrame(), f"Connection Error: {str(e)[:40]}"
 
     return pd.DataFrame(), "Unknown State"
 
-# Cache set to short 60 seconds so changes reflect instantly
 @st.cache_data(ttl=60)
 def load_data(selected_states):
     dfs = []
@@ -169,10 +176,9 @@ selected_states = st.sidebar.multiselect(
     default=["OH", "PA", "NY", "WV"]
 )
 
-# Fetch Data
 raw_df, status_log = load_data(selected_states)
 
-# Diagnostic log box in sidebar
+# Live Status Diagnostics Panel
 st.sidebar.markdown("---")
 st.sidebar.subheader("Live Feed Status")
 for state, status in status_log.items():
@@ -195,9 +201,9 @@ if not raw_df.empty:
 else:
     filtered_df = raw_df.copy()
 
-# Header Metrics
+# Header Metrics Row
 st.title("Appalachian Basin Oil & Gas Aggregator")
-st.caption("Live aggregate data pulling from state geological databases")
+st.caption("Live aggregate registry pulling from state geological databases")
 
 c1, c2, c3, c4 = st.columns(4)
 total_count = len(filtered_df)
@@ -239,4 +245,4 @@ if not filtered_df.empty:
         st.subheader("Aggregated Well Permit Registry")
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
 else:
-    st.error("No data fetched. Check the 'Live Feed Status' section in the left sidebar to see specific state error messages.")
+    st.error("No records returned. Check the 'Live Feed Status' box in the sidebar for details.")
