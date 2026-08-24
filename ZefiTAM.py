@@ -1,7 +1,8 @@
-import os
+import concurrent.futures
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import requests
 
 st.set_page_config(
     page_title="Appalachian Basin Oil & Gas Aggregator",
@@ -31,14 +32,112 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-@st.cache_data(ttl=3600)
-def load_cached_data():
-    file_path = "wells_data.parquet"
-    if os.path.exists(file_path):
-        return pd.read_parquet(file_path)
-    return pd.DataFrame(columns=['State', 'Permit_ID', 'Well_Number', 'Operator', 'County', 'Type', 'Status'])
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+}
 
-raw_df = load_cached_data()
+TARGET_COLS = ['State', 'Permit_ID', 'Well_Number', 'Operator', 'County', 'Type', 'Status']
+
+def get_first_valid_col(df, possible_names, default="Unknown"):
+    for col in possible_names:
+        if col in df.columns:
+            return df[col].astype(str)
+    return pd.Series([default] * len(df))
+
+def fetch_arcgis_page(url, offset, batch_size=2000):
+    params = {
+        'where': '1=1',
+        'outFields': '*',
+        'resultOffset': offset,
+        'resultRecordCount': batch_size,
+        'returnGeometry': 'false',
+        'f': 'json'
+    }
+    try:
+        res = requests.get(url, params=params, headers=HEADERS, timeout=10).json()
+        return [f['attributes'] for f in res.get('features', [])]
+    except Exception:
+        return []
+
+def fetch_arcgis_parallel(url, max_records=10000, batch_size=2000):
+    offsets = range(0, max_records, batch_size)
+    all_records = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(fetch_arcgis_page, url, offset, batch_size) for offset in offsets]
+        for future in concurrent.futures.as_completed(futures):
+            all_records.extend(future.result())
+    return pd.DataFrame(all_records)
+
+@st.cache_data(ttl=86400) # Cache for 24 hours
+def fetch_all_states():
+    dfs = []
+    
+    # Ohio
+    try:
+        df_oh = fetch_arcgis_parallel("https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/Oil_and_Gas_Wells_Locations_of_Ohio/FeatureServer/0/query", 10000)
+        if not df_oh.empty:
+            cdf = pd.DataFrame()
+            cdf['State'] = ['OH'] * len(df_oh)
+            cdf['Permit_ID'] = get_first_valid_col(df_oh, ['PERMIT_NBR', 'API_NUMBER', 'PERMIT'])
+            cdf['Well_Number'] = get_first_valid_col(df_oh, ['WELL_NUMBER', 'WELL_NUM'])
+            cdf['Operator'] = get_first_valid_col(df_oh, ['OWNER_NAME', 'OPERATOR'])
+            cdf['County'] = get_first_valid_col(df_oh, ['COUNTY'])
+            cdf['Type'] = get_first_valid_col(df_oh, ['WELL_TYPE'])
+            cdf['Status'] = get_first_valid_col(df_oh, ['WELL_STATUS'])
+            dfs.append(cdf)
+    except Exception: pass
+
+    # Pennsylvania
+    try:
+        df_pa = fetch_arcgis_parallel("https://gis.dep.pa.gov/depgisprd/rest/services/OilGas/OilGasAllStrayGas/MapServer/3/query", 10000)
+        if not df_pa.empty:
+            cdf = pd.DataFrame()
+            cdf['State'] = ['PA'] * len(df_pa)
+            cdf['Permit_ID'] = get_first_valid_col(df_pa, ['PERMIT_NUMBER', 'AUTH_ID'])
+            cdf['Well_Number'] = get_first_valid_col(df_pa, ['WELL_NUMBER'])
+            cdf['Operator'] = get_first_valid_col(df_pa, ['OPERATOR_NAME'])
+            cdf['County'] = get_first_valid_col(df_pa, ['COUNTY'])
+            cdf['Type'] = get_first_valid_col(df_pa, ['WELL_TYPE'])
+            cdf['Status'] = get_first_valid_col(df_pa, ['WELL_STATUS'])
+            dfs.append(cdf)
+    except Exception: pass
+
+    # New York (Bulk Single Request)
+    try:
+        res_ny = requests.get("https://data.ny.gov/resource/3ub5-233v.json?$limit=10000", headers=HEADERS, timeout=15).json()
+        df_ny = pd.DataFrame(res_ny)
+        if not df_ny.empty:
+            cdf = pd.DataFrame()
+            cdf['State'] = ['NY'] * len(df_ny)
+            cdf['Permit_ID'] = get_first_valid_col(df_ny, ['api_well_number'])
+            cdf['Well_Number'] = get_first_valid_col(df_ny, ['well_name'])
+            cdf['Operator'] = get_first_valid_col(df_ny, ['operator_name'])
+            cdf['County'] = get_first_valid_col(df_ny, ['county'])
+            cdf['Type'] = get_first_valid_col(df_ny, ['well_type'])
+            cdf['Status'] = get_first_valid_col(df_ny, ['well_status'])
+            dfs.append(cdf)
+    except Exception: pass
+
+    # West Virginia
+    try:
+        df_wv = fetch_arcgis_parallel("https://services.arcgis.com/jDGuO8tYggdCCnUJ/arcgis/rest/services/W_Virginia_1112018/FeatureServer/1/query", 10000)
+        if not df_wv.empty:
+            cdf = pd.DataFrame()
+            cdf['State'] = ['WV'] * len(df_wv)
+            cdf['Permit_ID'] = get_first_valid_col(df_wv, ['API'])
+            cdf['Well_Number'] = get_first_valid_col(df_wv, ['WELL_NO'])
+            cdf['Operator'] = get_first_valid_col(df_wv, ['OPERATOR'])
+            cdf['County'] = get_first_valid_col(df_wv, ['COUNTY'])
+            cdf['Type'] = pd.Series(['Oil/Gas'] * len(df_wv))
+            cdf['Status'] = get_first_valid_col(df_wv, ['STATUS'])
+            dfs.append(cdf)
+    except Exception: pass
+
+    if dfs:
+        return pd.concat(dfs, ignore_index=True).fillna("Unknown")
+    return pd.DataFrame(columns=TARGET_COLS)
+
+raw_df = fetch_all_states()
 
 # ---------------------------------------------------------
 # INTERFACE & CONTROLS
@@ -69,9 +168,8 @@ if not raw_df.empty:
 else:
     filtered_df = raw_df.copy()
 
-# Header & Metrics
 st.title("Appalachian Basin Oil & Gas Aggregator")
-st.caption("Daily synchronized registry across OH, PA, NY, WV, and KY state databases")
+st.caption("Live aggregate data pulling up to 10,000 wells per state in parallel")
 
 c1, c2, c3, c4 = st.columns(4)
 total_count = len(filtered_df)
@@ -112,5 +210,3 @@ if not filtered_df.empty:
     with tab2:
         st.subheader("Aggregated Well Permit Registry")
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
-else:
-    st.warning("Data sync in progress. Trigger the GitHub action or wait for the initial daily run.")
