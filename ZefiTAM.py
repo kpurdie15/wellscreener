@@ -34,7 +34,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Common headers to prevent state servers from blocking Python requests
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 }
@@ -42,54 +41,77 @@ HEADERS = {
 TARGET_COLS = ['State', 'Permit_ID', 'Well_Number', 'Operator', 'County', 'Type', 'Status']
 
 # ---------------------------------------------------------
-# STATE DATA FETCHERS
+# HELPER: ARCGIS PAGINATED FETCH
+# ---------------------------------------------------------
+def fetch_arcgis_paginated(url, where_clause="1=1", max_records=5000, batch_size=1000):
+    """Loops through ArcGIS REST API using resultOffset to bypass the 1k limit."""
+    all_records = []
+    offset = 0
+    
+    while offset < max_records:
+        params = {
+            'where': where_clause,
+            'outFields': '*',
+            'resultOffset': offset,
+            'resultRecordCount': batch_size,
+            'returnGeometry': 'false',
+            'f': 'json'
+        }
+        try:
+            res = requests.get(url, params=params, headers=HEADERS, timeout=12)
+            data = res.json()
+            features = data.get('features', [])
+            if not features:
+                break
+            
+            records = [f['attributes'] for f in features]
+            all_records.extend(records)
+            
+            # If batch returned fewer than batch_size, we reached the end
+            if len(features) < batch_size:
+                break
+                
+            offset += batch_size
+        except Exception:
+            break
+            
+    return pd.DataFrame(all_records)
+
+# ---------------------------------------------------------
+# STATE FETCHERS
 # ---------------------------------------------------------
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=3600)
 def fetch_ohio_data():
     """Ohio ODNR Open GIS API"""
     url = "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/Oil_and_Gas_Wells_Locations_of_Ohio/FeatureServer/0/query"
-    params = {
-        'where': '1=1',
-        'outFields': '*',
-        'resultRecordCount': 1000,
-        'f': 'json'
-    }
     try:
-        response = requests.get(url, params=params, headers=HEADERS, timeout=15)
-        data = response.json()
-        records = [f['attributes'] for f in data.get('features', [])]
-        df = pd.DataFrame(records)
+        df = fetch_arcgis_paginated(url, max_records=5000)
         if not df.empty:
             df['State'] = 'OH'
+            # Check for multiple possible column name variants
+            permit_col = 'PERMIT_NBR' if 'PERMIT_NBR' in df.columns else 'PERMIT'
+            owner_col = 'OWNER_NAME' if 'OWNER_NAME' in df.columns else 'OPERATOR'
+            
             df = df.rename(columns={
-                'PERMIT_NBR': 'Permit_ID',
+                permit_col: 'Permit_ID',
                 'WELL_NUMBER': 'Well_Number',
-                'OWNER_NAME': 'Operator',
+                owner_col: 'Operator',
                 'COUNTY': 'County',
                 'WELL_TYPE': 'Type',
                 'WELL_STATUS': 'Status'
             })
             return df
     except Exception as e:
-        st.warning(f"Ohio Fetch Error: {e}")
+        st.warning(f"Ohio Fetch Warning: {e}")
     return pd.DataFrame()
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=3600)
 def fetch_pa_data():
     """Pennsylvania DEP GIS API"""
     url = "https://gis.dep.pa.gov/depgisprd/rest/services/OilGas/OilGasAllStrayGas/MapServer/3/query"
-    params = {
-        'where': '1=1',
-        'outFields': '*',
-        'resultRecordCount': 1000,
-        'f': 'json'
-    }
     try:
-        response = requests.get(url, params=params, headers=HEADERS, timeout=15)
-        data = response.json()
-        records = [f['attributes'] for f in data.get('features', [])]
-        df = pd.DataFrame(records)
+        df = fetch_arcgis_paginated(url, max_records=5000)
         if not df.empty:
             df['State'] = 'PA'
             df = df.rename(columns={
@@ -102,16 +124,16 @@ def fetch_pa_data():
             })
             return df
     except Exception as e:
-        st.warning(f"PA Fetch Error: {e}")
+        st.warning(f"PA Fetch Warning: {e}")
     return pd.DataFrame()
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=3600)
 def fetch_ny_data():
-    """New York Open Data Socrata API"""
-    url = "https://data.ny.gov/resource/3ub5-233v.json?$limit=1000"
+    """New York Open Data Socrata API (Paginated)"""
+    url = "https://data.ny.gov/resource/3ub5-233v.json?$limit=5000"
     try:
-        response = requests.get(url, headers=HEADERS, timeout=15)
-        df = pd.DataFrame(response.json())
+        res = requests.get(url, headers=HEADERS, timeout=15)
+        df = pd.DataFrame(res.json())
         if not df.empty:
             df['State'] = 'NY'
             df['Well_Number'] = df.get('well_name', df.get('api_well_number', 'N/A'))
@@ -124,24 +146,15 @@ def fetch_ny_data():
             })
             return df
     except Exception as e:
-        st.warning(f"NY Fetch Error: {e}")
+        st.warning(f"NY Fetch Warning: {e}")
     return pd.DataFrame()
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=3600)
 def fetch_wv_data():
     """West Virginia DEP GIS API"""
     url = "https://services.arcgis.com/jDGuO8tYggdCCnUJ/arcgis/rest/services/W_Virginia_1112018/FeatureServer/1/query"
-    params = {
-        'where': '1=1',
-        'outFields': '*',
-        'resultRecordCount': 1000,
-        'f': 'json'
-    }
     try:
-        response = requests.get(url, params=params, headers=HEADERS, timeout=15)
-        data = response.json()
-        records = [f['attributes'] for f in data.get('features', [])]
-        df = pd.DataFrame(records)
+        df = fetch_arcgis_paginated(url, max_records=5000)
         if not df.empty:
             df['State'] = 'WV'
             df['Type'] = 'Oil/Gas'
@@ -154,40 +167,42 @@ def fetch_wv_data():
             })
             return df
     except Exception as e:
-        st.warning(f"WV Fetch Error: {e}")
+        st.warning(f"WV Fetch Warning: {e}")
     return pd.DataFrame()
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=3600)
 def fetch_ky_data():
     """Kentucky Geological Survey API"""
     url = "https://kgs.uky.edu/arcgis/rest/services/OilGas/KY_OilGas_Wells/MapServer/0/query"
-    params = {
-        'where': '1=1',
-        'outFields': '*',
-        'resultRecordCount': 1000,
-        'f': 'json'
-    }
     try:
-        response = requests.get(url, params=params, headers=HEADERS, timeout=15)
-        data = response.json()
-        records = [f['attributes'] for f in data.get('features', [])]
+        # KY KGS uses a direct query format
+        params = {
+            'where': '1=1',
+            'outFields': '*',
+            'resultRecordCount': 2000,
+            'returnGeometry': 'false',
+            'f': 'json'
+        }
+        res = requests.get(url, params=params, headers=HEADERS, timeout=15, verify=False)
+        records = [f['attributes'] for f in res.json().get('features', [])]
         df = pd.DataFrame(records)
         if not df.empty:
             df['State'] = 'KY'
+            op_col = 'OPERATOR_NAME' if 'OPERATOR_NAME' in df.columns else 'OPERATOR'
             df = df.rename(columns={
                 'PERMIT_NO': 'Permit_ID',
                 'WELL_NO': 'Well_Number',
-                'OPERATOR_NAME': 'Operator',
+                op_col: 'Operator',
                 'COUNTY': 'County',
                 'WELL_TYPE': 'Type',
                 'STATUS': 'Status'
             })
             return df
     except Exception as e:
-        st.warning(f"KY Fetch Error: {e}")
+        st.warning(f"KY Fetch Warning: {e}")
     return pd.DataFrame()
 
-def get_aggregated_data(selected_states):
+def get_aggregated_data(selected_states, max_per_state):
     dfs = []
     state_map = {
         "OH": fetch_ohio_data,
@@ -201,6 +216,8 @@ def get_aggregated_data(selected_states):
         if state in state_map:
             df_state = state_map[state]()
             if not df_state.empty:
+                # Cap records based on sidebar slider
+                df_state = df_state.head(max_per_state)
                 for col in TARGET_COLS:
                     if col not in df_state.columns:
                         df_state[col] = "N/A"
@@ -221,15 +238,24 @@ selected_states = st.sidebar.multiselect(
     default=["OH", "PA", "NY", "WV", "KY"]
 )
 
-raw_df = get_aggregated_data(selected_states)
+record_limit = st.sidebar.slider(
+    "Max Wells Per State",
+    min_value=500,
+    max_value=10000,
+    value=3000,
+    step=500,
+    help="Higher limits fetch more records but take longer to pull."
+)
+
+raw_df = get_aggregated_data(selected_states, record_limit)
 
 if not raw_df.empty:
     raw_df = raw_df.fillna("Unknown")
     
-    operators = ["All"] + sorted([str(op) for op in raw_df['Operator'].unique() if op])
+    operators = ["All"] + sorted([str(op) for op in raw_df['Operator'].unique() if op and op != "Unknown"])
     selected_operator = st.sidebar.selectbox("Operator / Owner", operators)
     
-    counties = ["All"] + sorted([str(c) for c in raw_df['County'].unique() if c])
+    counties = ["All"] + sorted([str(c) for c in raw_df['County'].unique() if c and c != "Unknown"])
     selected_county = st.sidebar.selectbox("County", counties)
     
     filtered_df = raw_df.copy()
@@ -290,4 +316,4 @@ if not filtered_df.empty:
         st.subheader("Aggregated Well Permit Registry")
         st.dataframe(filtered_df, use_container_width=True, hide_index=True)
 else:
-    st.info("Fetching data from state servers... If data does not appear, ensure you have active internet connectivity and at least one state selected.")
+    st.info("Fetching data from state servers...")
